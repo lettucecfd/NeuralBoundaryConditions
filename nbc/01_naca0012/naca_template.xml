@@ -1,0 +1,313 @@
+<?R
+GPDs = c(250)
+time_in_pu = 50
+mach_number = 0.1
+Diameters_per_Y = 10
+DpXs = c(6.5,13)
+
+collision_operator = "MRT"
+outletBCs = c("EPressure")
+outletBCs = c("EPressure_nbc1")
+outletBCs = c("EPressure")
+outletBCs = c("EPressure_nbc1", "EPressure")
+
+m = 0
+p = 0
+T = 12
+alphas = seq(0,2,1)
+alphas = seq(0,10,1)
+alphas = c(10)
+alphas = seq(0,20,1)
+
+extension = "_v3"
+filepaths = c()
+
+export_f = 0
+load_f = 0
+iteration = 34987
+
+fps_1 = 50
+fps_2 = 50
+
+num_simulations = length(outletBCs)*length(alphas)*length(DpXs)*length(GPDs)
+directory <- "./xml/"
+reynolds_number = 1000
+names = c()
+
+for (gg in 1:length(GPDs)){
+GPD = GPDs[gg]
+
+for (kk in 1:length(outletBCs)){
+outletBC = outletBCs[kk]
+
+for (jj in 1:length(DpXs)){
+Diameters_per_X = DpXs[jj]
+
+for (ii in 1:length(alphas)){
+        alpha<-alphas[ii]
+        name = paste0("naca_",outletBC,"_",collision_operator,"_Re",reynolds_number,"_GPD",GPD,"_DpX",Diameters_per_X,"_DpY",Diameters_per_Y,"_mach",mach_number,"_angle",alpha,extension)
+        filepaths = c(filepaths,paste0(directory,name,".xml"))
+        names=c(names, name)
+
+characteristic_length_pu = 1
+characteristic_velocity_pu = 1
+characteristic_density_pu = 1
+cs = 1 / sqrt(3.0)
+characteristic_velocity_lu = cs * mach_number
+characteristic_length_lu = GPD
+characteristic_density_lu = 1
+
+
+char_time_lu = characteristic_length_lu / characteristic_velocity_lu
+char_time_pu = characteristic_length_pu / characteristic_velocity_pu
+if (exists("time_in_lu")) {
+  time_in_lu = time_in_lu
+} else {
+  time_in_lu = floor(time_in_pu / char_time_pu * char_time_lu)
+}
+
+time_in_lu_2 = floor(time_in_pu_2 / char_time_pu * char_time_lu)
+vtk_iteration = floor((fps_1) / char_time_pu * char_time_lu)
+csv_iteration = floor((1/fps_2) / char_time_pu * char_time_lu)
+
+ny = Diameters_per_Y*GPD
+nx = Diameters_per_X*GPD
+nx_bc = floor(nx*0.5)
+nx_no_collision = nx_bc+1
+
+Loc_x = floor(ny / 2) - (GPD / 2)
+Loc_y = floor(ny / 2) - (GPD / 2)
+
+disturbance_ax = characteristic_velocity_lu/50*0
+disturbance_ay = 0
+disturbance_b = ny/5
+disturbance_c = 1/(GPD*Diameters_per_Y*100)
+disturbance_norm = ny
+
+viscosity_lu = characteristic_length_lu * characteristic_velocity_lu / reynolds_number
+relaxation_parameter_lu = viscosity_lu / cs ** 2 + 0.5
+omega = 1 / relaxation_parameter_lu
+mrt_S2 = 1-omega
+
+
+if (!dir.exists(directory)) {
+  dir.create(directory)
+}
+
+
+
+
+
+filepath = paste0(directory,name,".xml")
+sink(filepath)
+?>
+<?xml version="1.0"?>
+<CLBConfig version="2.0" output="output/">
+
+  <Units>
+      <Param value="<?%f characteristic_length_pu ?>m" gauge="<?%f characteristic_length_lu ?>"/>
+      <Param value="<?%f characteristic_velocity_pu ?>m/s" gauge="<?%f characteristic_velocity_lu ?>"/>
+  </Units>
+
+    <Geometry nx="<?%d nx ?>" ny="<?%d ny ?>">
+        <<?%s collision_operator ?>>
+          <Box/>
+        </<?%s collision_operator ?>>
+        <WVelocity name="inlet">
+    			<Box nx="1"/>
+    		</WVelocity>
+        <<?%s outletBC ?> name="outlet">
+    			<Box dx="-1"/>
+    		</<?%s outletBC ?>>
+    </Geometry>
+    <RunR>
+      GPD = <?%d GPD ?>
+      m = <?%d m ?> / 100  # Direkt umgerechnet
+      p = <?%d p ?> / 10   # Direkt umgerechnet
+      T = <?%d T ?> / 100
+      alpha = <?%d alpha ?> / 360 * 2 * pi
+      DpX = <?%f Diameters_per_X ?>
+      DpY = <?%d Diameters_per_Y ?>
+
+      nx = Solver$Geometry$dim[1]
+      ny = Solver$Geometry$dim[2]
+      nz = Solver$Geometry$dim[3]
+      # Datenrahmen initialisieren
+      x = seq(-0.1, 1.1, length.out = GPD*100)
+      yc = numeric(GPD)
+      dyc_dx = numeric(GPD)
+
+      # yc berechnen mit einer Schleife
+      for (i in seq_along(x)) {
+        xc = x[i]
+        if (xc >= p) {
+          yc[i] = m / (1 - p)^2 * (1 - 2 * p + 2 * p * xc - xc^2)
+          dyc_dx[i] = 2 * m / ((1 - p)^ 2) * (p - x)
+        } else {
+          yc[i] = m/p^2*(2*p*xc - xc^2)
+          dyc_dx[i] =2*m/(p^2)*(p - xc)
+        }
+      }
+
+      # yt-Berechnung
+      a0 = 0.594689181
+      a1 = 0.298222773
+      a2 = - 0.127125232
+      a3 = - 0.357907906
+      a4 = 0.291984971
+      a5 = - 0.105174606
+      yc = numeric(length(x))*0
+      yt = numeric(length(x))
+      for (i in seq_along(x)) {
+        xc = x[i]
+        yt[i] = a0*(a1*sqrt(xc)+a2*xc+a3*xc^2+a4*xc^3+a5*xc^4)
+      }
+
+      xu = (x)*GPD
+      yu = (yc+yt)*GPD
+      xl = (x)*GPD
+      yl = (yc-yt)*GPD
+
+      xu_rot = xu * cos(alpha) - yu * sin(alpha)+floor(ny/2)
+      yu_rot = xu * sin(alpha) + yu * cos(alpha)+floor(ny/2)
+      xl_rot = xu * cos(alpha) - yl * sin(alpha)+floor(ny/2)
+      yl_rot = xu * sin(alpha) + yl * cos(alpha)+floor(ny/2)
+
+      x_max = GPD * cos(alpha)+floor(ny/2)
+      x_min = 0 * cos(alpha)+floor(ny/2)
+
+      # Maske erstellen
+      mask = matrix(FALSE, nrow = nx, ncol = ny)
+      Ay_min = ny
+      Ay_max = 0
+      Ax_min = nx
+      Ax_max = 0
+      for (x_iter in seq(x_min, x_max, by = 1)) {
+
+        yu_interpolated = approx(xu_rot, yu_rot, x_iter, rule = 2)$y
+        yl_interpolated = approx(xl_rot, yl_rot, x_iter, rule = 2)$y
+        if (!is.nan(yu_interpolated) && !is.nan(yl_interpolated)) {
+          if (x_iter==x_min+2){
+          print(xu_rot)
+          print(yu_interpolated)
+          print(yl_interpolated)
+          }
+          if (yu_interpolated > yl_interpolated) {
+            mask[x_iter, floor(yl_interpolated):floor(yu_interpolated)] = TRUE
+            if (Ay_min > floor(yl_interpolated)) {Ay_min = floor(yl_interpolated)}
+            if (floor(yu_interpolated) > Ay_max) {Ay_max = floor(yu_interpolated)}
+            if (Ax_min==nx){Ax_min=x_iter}
+            Ax_max = x_iter
+          }
+        }
+      }
+      Solver$Geometry$BOUNDARY[,,nz][mask]="Wall"
+      Solver$Geometry$BOUNDARY[,,nz][mask]="Solid"
+      Solver$Geometry$COLLISION[,,nz][mask]="None"
+      Solver$Geometry$BODY[,,nz][mask]="Body"
+
+      Ay = Ax_max-Ax_min
+      Ax = Ay_max-Ay_min
+      Solver$Settings$Ax = Ax
+      Solver$Settings$Ay = Ay
+      print(paste("Ax,", Ax))
+      print(paste("Ay,", Ay))
+
+    </RunR>
+
+    <Model>
+        <Param name="Velocity_x"             value="<?%f characteristic_velocity_lu ?>"/>
+        <Param name="disturbance_ax"          value="<?%f disturbance_ax ?>"/>
+        <Param name="disturbance_ay"          value="<?%f disturbance_ay ?>"/>
+        <Param name="disturbance_b"          value="<?%f disturbance_b ?>"/>
+        <Param name="disturbance_c"          value="<?%f disturbance_c ?>"/>
+        <Param name="disturbance_norm"       value="<?%f disturbance_norm ?>"/>
+        <Param name="omega"                  value="<?%f omega ?>"/>
+        <Param name="GravitationX"           value="0.0"/>
+        <Param name="Density"                value="1"/>
+        <Param name="tmp1"                   value="2"/>
+        <Param name="tmp2"                   value="100"/>
+        <Param name="YY"                     value="<?%d ny ?>"/>
+        <Param name="XX"                     value="10000"/>
+        <Param name="S2"                     value="<?%f mrt_S2 ?>"/>
+    </Model>
+
+    <Log Iterations="50"/>
+    <Solve Iterations="<?%f time_in_lu ?>"/>
+    <RunR>
+      if (<?%d export_f ?> == 1) {
+        # Create the 'csv' directory if it doesn't exist
+        output_dir = "csv"
+        if (!dir.exists(output_dir)) {
+          dir.create(output_dir)
+        }
+        reynolds_dir = file.path(output_dir, paste0("re", <?%d reynolds_number ?>))
+          if (!dir.exists(reynolds_dir)) {
+            dir.create(reynolds_dir)
+          }
+
+        iteration = Solver$Globals$Iteration
+        formatted_iteration = sprintf("%08d", iteration)  # Format iteration with 5 digits and leading zeros
+
+        for (i in 0:8) {
+          fout_var = Solver$Quantities[[paste0("fout", i)]]
+          write.table(fout_var, paste0(reynolds_dir,"/f", i, "_", formatted_iteration, ".csv"), row.names = FALSE, col.names = FALSE, sep = ",")
+        }
+      }
+    </RunR>
+
+</CLBConfig>
+<?R
+    sink()
+}}}}?>´
+
+<?R
+sink("run_xml_files.sh")
+?>
+#!bin/bash
+
+<?R
+hostname <- Sys.info()[["nodename"]]
+if (endsWith(hostname, "compute.eait.uq.edu.au")) {
+  tclb_dir = "/home/Staff/uqmbedru/tclb"
+  compiled_model = "${tclb_dir}/p/run d2q9nbc"
+}
+if (endsWith(hostname, "wr0.wr.inf.h-brs.de")) {
+  tclb_dir = "/home/mbedru3s/tclb"
+  compiled_model = "${tclb_dir}/p/run d2q9nbc"
+  compiled_model = "sbatch job.sh"
+}
+if (hostname == "ms405-8924") {
+  tclb_dir = "/home/uqmbedru/Documents/projects/nbc"
+  compiled_model = "${tclb_dir}/CLB/d2q9nbc/main"
+} ?>
+
+# Set tclb_dir to the first argument
+tclb_dir="<?%s tclb_dir?>"
+
+<?R
+for (i in 1:num_simulations){ ?>
+<?%s compiled_model?> <?%s filepaths[i]?> <?R }
+sink()
+?>
+
+<?R
+formatted_string <- sprintf("process_csv_files.sh")
+sink(formatted_string)
+?> #!/bin/bash
+
+csv_files=( <?R for (i in 1:num_simulations){ ?>
+  "./output/<?%s names[i]?>_Log_P00_<?%08d time_in_lu?>.csv" <?R } ?>
+  )
+
+output_files=( <?R for (i in 1:num_simulations){ ?>
+  "./output/<?%s names[i]?>_forceCoefficients.csv" <?R } ?>
+  )
+
+for index in "${!csv_files[@]}"; do
+  input_file="${csv_files[$index]}"
+  output_file="${output_files[$index]}"
+  python postprocessing_csv.py $input_file $output_file
+done <?R
+sink()
+?>
