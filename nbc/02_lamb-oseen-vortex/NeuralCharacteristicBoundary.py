@@ -154,7 +154,7 @@ if __name__ == "__main__":
     parser.add_argument("--K_neural", action="store_true", default=False)
     parser.add_argument("--train", action="store_true", default=False)
     parser.add_argument("--load_model", action="store_true", default=True)
-    parser.add_argument("--model_name_saved", type=str, default="model_trained_v6.pt")
+    parser.add_argument("--model_name_saved", type=str, default="model_trained.pt")
     parser.add_argument("--model_name_loaded", type=str, default="model_trained.pt")
     parser.add_argument("--output_directory", type=str, default="./dataset")
     parser.add_argument("--reporter", action="store_true", default=False)
