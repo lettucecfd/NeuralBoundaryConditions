@@ -14,12 +14,13 @@ import glob # For finding files
 import re   # For parsing filenames (optional, can use string splitting too)
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import plopy
+from init_naca0012 import get_naca0012_mask
 
 
 __all__ = [
     "Transform", "D2Q9Dellar", "ShiftedSigmoid", "HDF5Reporter", "LettuceDataset", "WVelocity", "TotalPressure",
     "Acoustic", "CharacteristicBoundary", "plotU", "plotRho", "TensorReporter", "TensorDataset", "plot_velocity_density",
-    "Reflection", "ZouAndHe", "PlotNeuralNetwork", "_collide", "PlotNeuralNetwork"
+    "Reflection", "ZouAndHe", "PlotNeuralNetwork", "_collide", "NACA0012"
 ]
 
 class Transform:
@@ -344,6 +345,39 @@ class WVelocity(lt.Boundary):
     def native_generator(self, index: int) -> 'NativeBoundary':
         return None
 
+class WEq(lt.Boundary):
+    """Sets distributions on this boundary to equilibrium with predefined
+    velocity and pressure.
+    Note that this behavior is generally not compatible with the Navier-Stokes
+    equations. This boundary condition should only be used if no better
+    options are available.
+    """
+
+    def __init__(self, context: 'Context', mask, velocity, pressure=0):
+        velocity = [velocity] if not hasattr(velocity, '__len__') else velocity
+        self.velocity = context.convert_to_tensor(velocity)
+        self.pressure = context.convert_to_tensor(pressure)
+        self._mask = mask
+
+    def __call__(self, flow: 'Flow'):
+        f_out = flow.f.clone()
+        f_out[:, 0, :] = flow.equilibrium(flow, u = flow.units.convert_velocity_to_lu(self.velocity), rho=1)[...,None]
+        return f_out
+
+    def make_no_collision_mask(self, shape: List[int], context: 'Context'
+                               ) -> Optional[torch.Tensor]:
+        pass
+
+    def make_no_streaming_mask(self, shape: List[int], context: 'Context'
+                               ) -> Optional[torch.Tensor]:
+        pass
+
+    def native_available(self) -> bool:
+        return False
+
+    def native_generator(self, index: int) -> 'NativeBoundary':
+        return None
+
 class Acoustic(ExtFlow):
     def __init__(self, context: 'Context', resolution: Union[int, List[int]],
                  reynolds_number, mach_number,
@@ -353,12 +387,16 @@ class Acoustic(ExtFlow):
                  velocity_init = 1,
                  K=None,
                  distanceFromRight=200,
-                 xc = 150):
+                 xc = 150,
+                 char_lu = 200,
+                 char_pu = 10):
         self.initialize_fneq = initialize_fneq
         self.velocity_init = velocity_init
         self.distanceFromRight = distanceFromRight
         self.K = 0 if K is None else K
         self.xc = xc
+        self.char_lu = char_lu
+        self.char_pu = char_pu
         if stencil is None and not isinstance(resolution, list):
             warnings.warn("Requiring information about dimensionality!"
                           " Either via stencil or resolution. Setting "
@@ -384,8 +422,8 @@ class Acoustic(ExtFlow):
         return UnitConversion(
             reynolds_number=reynolds_number,
             mach_number=mach_number,
-            characteristic_length_lu=200,
-            characteristic_length_pu=10,
+            characteristic_length_lu=self.char_lu,
+            characteristic_length_pu=self.char_pu,
             characteristic_velocity_pu=1)
 
     @property
@@ -462,17 +500,133 @@ class Acoustic(ExtFlow):
                                   )
         mask_outlet = torch.zeros_like(x, dtype=torch.bool);
         mask_outlet[-1, :] = True
+        # Outlet = CharacteristicBoundary(context=self.context,
+        #                           mask=mask_outlet,
+        #                           velocity=[self.units.convert_velocity_to_lu(self.velocity_init), 0],
+        #                           K=self.K,
+        #                           mach=self.units.mach_number)
+        Outlet = ZouAndHe(context=self.context,
+                          mask=mask_outlet,
+                          velocity=[self.units.convert_velocity_to_lu(self.velocity_init), 0],
+                          K=self.K,
+                          mach=self.units.mach_number)
+        return [Inlet, Outlet]
+
+
+class NACA0012(Acoustic):
+    def __init__(self, context: 'Context', resolution: Union[int, List[int]],
+                 reynolds_number, mach_number,
+                 stencil: Optional['Stencil'] = None,
+                 equilibrium: Optional['Equilibrium'] = None,
+                 initialize_fneq: bool = True,
+                 velocity_init=1,
+                 K=None,
+                 distanceFromRight=200,
+                 xc=150,
+                 # Neue Parameter für NACA
+                 gpd=150, cx=100, cy=150, aoa=0):
+        # 1. WICHTIG: Argumente an die Elternklasse weitergeben!
+        super().__init__(
+            context=context,
+            resolution=resolution,
+            reynolds_number=reynolds_number,
+            mach_number=mach_number,
+            stencil=stencil,
+            equilibrium=equilibrium,
+            initialize_fneq=initialize_fneq,
+            velocity_init=velocity_init,
+            K=K,
+            distanceFromRight=distanceFromRight,
+            xc=xc,
+            char_lu = gpd,
+            char_pu = 1
+        )
+
+        # Parameter speichern
+        self.naca_gpd = gpd
+        self.naca_cx = cx
+        self.naca_cy = cy
+        self.naca_aoa = aoa
+
+
+    def initial_pu(self) -> (torch.Tensor, torch.Tensor):
+        p = torch.zeros((1, *self.resolution),
+                        device=self.context.device,
+                        dtype=self.context.dtype)
+        u = torch.full(self.resolution,
+                       fill_value=self.velocity_init,
+                       device=self.context.device,
+                       dtype=self.context.dtype)
+        v = torch.zeros(self.resolution,
+                        device=self.context.device,
+                        dtype=self.context.dtype)
+        U = torch.stack([u, v], dim=0)
+        return p, U
+
+    @property
+    def boundaries(self) -> List['Boundary']:
+        x = self.grid[0]
+        # Inlet = WVelocity(context=self.context,
+        #                           mask=torch.abs(x) < 1e-6,
+        #                           velocity=[1, 0]
+        #                           )
+        Inlet = WEq(context=self.context,
+                    mask=torch.abs(x) < 1e-6,
+                    velocity=[1, 0]
+                    )
+        mask_outlet = torch.zeros_like(x, dtype=torch.bool);
+        mask_outlet[-1, :] = True
         Outlet = CharacteristicBoundary(context=self.context,
                                   mask=mask_outlet,
                                   velocity=[self.units.convert_velocity_to_lu(self.velocity_init), 0],
                                   K=self.K,
                                   mach=self.units.mach_number)
-        # Outlet = ZouAndHe(context=self.context,
-        #                   mask=mask_outlet,
-        #                   velocity=[self.units.convert_velocity_to_lu(self.velocity_init), 0],
-        #                   K=self.K,
-        #                   mach=self.units.mach_number)
-        return [Inlet, Outlet]
+
+        Outlet = ZouAndHe(context=self.context,
+                          mask=mask_outlet,
+                          velocity=[self.units.convert_velocity_to_lu(self.velocity_init), 0],
+                          K=self.K,
+                          mach=self.units.mach_number)
+        naca_mask_np, _ = get_naca0012_mask(
+            nx=self.resolution[0],
+            ny=self.resolution[1],
+            gpd=self.naca_gpd,  # Nutzung der Parameter aus __init__
+            cx=self.naca_cx,
+            cy=self.naca_cy,
+            aoa_deg=self.naca_aoa
+        )
+        np.save("naca_mask.npy", naca_mask_np)
+
+        # 2. WICHTIG: Numpy Array zu Boolean Tensor auf dem richtigen Device konvertieren
+        naca_mask_tensor = self.context.convert_to_tensor(naca_mask_np).bool()
+
+        Naca = NacaBounceBackBoundary(naca_mask_tensor)
+
+        return [Inlet, Outlet, Naca]
+
+class NacaBounceBackBoundary(lt.Boundary):
+    _mask: torch.Tensor
+
+    def __init__(self, mask: torch.Tensor):
+        self._mask = mask
+        return
+
+    def __call__(self, flow: 'Flow'):
+        return torch.where(self._mask, flow.f[flow.stencil.opposite], flow.f)
+
+    def make_no_streaming_mask(self, shape: List[int], context: 'Context'
+                               ) -> Optional[torch.Tensor]:
+        return None
+
+    def make_no_collision_mask(self, shape: List[int], context: 'Context'
+                               ) -> Optional[torch.Tensor]:
+        return self._mask
+
+    def native_available(self) -> bool:
+        return False
+
+    def native_generator(self, index: int) -> 'NativeBoundary':
+        return False
 
 
 class ZouAndHe(lt.Boundary):
@@ -522,6 +676,7 @@ class ZouAndHe(lt.Boundary):
 
     def native_generator(self, index: int) -> 'NativeBoundary':
         return None
+
 
 class CharacteristicBoundary(lt.Boundary):
     """Sets distributions on this boundary to equilibrium with predefined
@@ -604,6 +759,7 @@ class CharacteristicBoundary(lt.Boundary):
         T5 = - (v_local * p_dy + self.cs2 * rho_local * v_dy + rho_local * self.cs * v_local * u_dy)
 
         L1 = K[:, 0] * (1 - self.mach ** 2) * self.cs * self.Rc_inv * self.cs2 * (rho_local - 1.0) - K[:, 1] * (T1 - 0) + T1
+        # L1 = 1 * (1 - self.mach ** 2) * self.cs * self.Rc_inv * self.cs2 * (rho_local - 1.0) - 0 * (T1 - 0) + T1
         # T1 = 0
         # T3 = 0
         # T5 = 0
@@ -1239,27 +1395,3 @@ def _collide(self):
         self.flow.f = boundary(self.flow)
     self.flow.f = self.collision(self.flow)
     return self.flow.f
-
-
-class PlotNeuralNetwork(plopy.Plot):
-
-    def loss_function(self, loss=None, epochs=None, name="loss_function"):
-        fig, ax1 = plt.subplots()
-        ax1.grid(visible=True, which='major', axis='y')
-        ax1.tick_params(axis="y", direction="in", pad=0)
-        ax1.set_title(r"\noindent\footnotesize{$L$}", ha='right')
-        ax1.set_title(r"\noindent\textbf{Loss} \textendash{} \footnotesize{TGV3D}", loc='left', )
-        ax1.set_title("L", ha='right')
-        ax1.set_title("Loss", loc='left', )
-        ax1.set_xlabel("Epochs", style='italic', color='#525254')
-
-        DarkGray = "#222222"
-        epochs = np.arange(1,len(loss)+1) if epochs is None else epochs
-        plt.plot(epochs, loss, linewidth=1.5, color=DarkGray, label=r'Loss')
-
-        self.standard_export(name=name,
-                             png=False,
-                             pdf=True)
-        export = False
-        if export:
-            return fig, ax1
