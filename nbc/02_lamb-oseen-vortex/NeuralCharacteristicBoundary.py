@@ -83,20 +83,6 @@ class NeuralTuning(torch.nn.Module):
                 torch.nn.LeakyReLU(negative_slope=0.01),
                 torch.nn.Linear(nodes, 2, bias=True),
             ).to(dtype=dtype, device=device)
-        if netversion==2:
-            self.net = torch.nn.Sequential(
-                torch.nn.Linear(9, nodes, bias=True),
-                torch.nn.Linear(nodes, nodes, bias=True),
-                torch.nn.ReLU(),
-                torch.nn.Linear(nodes, 2, bias=True),
-            ).to(dtype=dtype, device=device)
-        if netversion==3:
-            self.net = torch.nn.Sequential(
-                torch.nn.Linear(9, nodes, bias=True),
-                torch.nn.Linear(nodes, nodes, bias=True),
-                torch.nn.ReLU(),
-                torch.nn.Linear(nodes, 2, bias=True),
-            ).to(dtype=dtype, device=device)
 
         self.index = index
         self.K0max_t = 0
